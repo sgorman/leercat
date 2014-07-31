@@ -11,7 +11,8 @@ running it will look through all your followers then unfllow anyone who does not
 setup
 =====
 
-- gem install twitter
+`gem install twitter`
+
 - edit the config.rb with your twitter app settings
 - make sure you give your app full permissions
 - run the program
@@ -19,4 +20,11 @@ setup
 usage
 =====
 
-ruby leercat.rb
+`ruby leercat.rb`
+
+additional stuff
+================
+
+run this command so you don't have to worry about adding your personal config file to the repo.
+
+`git update-index --assume-unchanged config.rb`
