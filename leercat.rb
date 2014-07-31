@@ -1,13 +1,7 @@
 require 'Twitter'
+load 'config.rb'
 
-config = {
-  :consumer_key        => "***REMOVED***",
-  :consumer_secret     => "***REMOVED***",
-  :access_token        => "***REMOVED***",
-  :access_token_secret => "***REMOVED***",
-}
-
-client = Twitter::REST::Client.new(config)
+client = Twitter::REST::Client.new($config)
 
 MAX_ATTEMPTS = 10
 num_attempts = 0
