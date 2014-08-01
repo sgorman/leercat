@@ -6,7 +6,7 @@ leercat is currently just a twitter script written in ruby. it uses the twitter 
 what does it do?
 ================
 
-running it will look through all your followers then unfellow anyone who does not follow you back.
+running it will look through all your followers then unfollow anyone who does not follow you back.
 
 setup
 =====
