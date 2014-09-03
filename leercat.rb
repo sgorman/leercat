@@ -11,97 +11,110 @@ class Leercat
 		@client = Twitter::REST::Client.new(config)
 		@stream = Twitter::Streaming::Client.new(config)
 		@whatlanguage = WhatLanguage.new(:all)
+		@do_not_remove_list = []
+		@interesting_subjects = ['social media marketing', 'gain tweet', 'streamer', 'followers', 'anime', 'dancing', 'shuffling', 'brostep', 'jpop', 'kpop', 'metal', 'dubstep', 'dnb', 'trap', 'house', 'electro-house', 'hardcore', 'post-hardcore', 'rock', 'minecraft', 'league of legends', 'gamer']
+		@gain_tweet_words = ['#جــدة','#ＲＥＴＷＥＥＴ','#TFB_Cats','RT2GAIN','FOLLOWBACK','#FOLLOW','followback','#MGWV','#AnotherFollowTrain','FOLLOWTRICK','#TEAMFOLLOWBACK','#TEAMMZBNIKKI']
+	end
+
+	def get_gain_tweet_words
+		return @gain_tweet_words
+	end
+
+	def get_interesting_subjects
+		return @interesting_subjects
+	end
+
+	def perform_rate_limited_action
+		begin
+			yield
+		rescue Twitter::Error::NotFound => error
+			puts "Twitter could not find the object you are requesting to use."
+		rescue Twitter::Error::ServiceUnavailable => error
+			puts "Twitter API is unavailable at this moment. We will retry in a few seconds."
+			sleep 5
+			retry
+		rescue Twitter::Error::TooManyRequests => error
+			puts "We hit the rate limit. Sleeping for #{error.rate_limit.reset_in} seconds."
+			sleep error.rate_limit.reset_in
+			retry
+		end
 	end
 
 	def create_following_list()
-		num_attempts = 0
-
-		begin
-			num_attempts += 1
+		perform_rate_limited_action {
 			@following_ids = @client.friend_ids
-		rescue Twitter::Error::TooManyRequests => error
-			if num_attempts <= MAX_ATTEMPTS
-				puts "We hit the rate limit sleeping for #{error.rate_limit.reset_in} seconds."
-				sleep error.rate_limit.reset_in
-				puts "Resuming operations."
-				retry
-			else
-				raise
-			end
-		end
-
+		}
 		return @following_ids
 	end
 
-	def create_unfollower_list()
-		num_attempts = 0
-
-		unfollow_ids = []
-		@following_ids.each_slice(100) do |section|
-			begin
-				@client.friendships(section).each do |user|
-					follows_me  = user.connections.include? 'followed_by'
-					unless follows_me then
-						puts "#{user.name} (@#{user.screen_name}) does not follow me."
-						unfollow_ids.push(user)
-					end
-				end
-			rescue Twitter::Error::TooManyRequests => error
-				if num_attempts <= MAX_ATTEMPTS
-					puts "We hit the rate limit sleeping for #{error.rate_limit.reset_in} seconds."
-					sleep error.rate_limit.reset_in
-					puts "Resuming operations."
-					retry
-				else
-					raise
+	def get_list_members(list_owner, list_name)
+		list_members = []
+		perform_rate_limited_action {
+			@client.list_members(list_owner, list_name).each do |user| 
+				if !list_members.include?(user.id)
+					list_members.push(user.id)
 				end
 			end
-		end
+		}
+		return list_members	
+	end
 
+	def create_unfollower_list()
+		unfollow_ids = []
+		@following_ids.each_slice(100) do |section|
+			perform_rate_limited_action {
+				@client.friendships(section).each do |user|
+					follows_me  = user.connections.include? 'followed_by'
+					if !follows_me and !@do_not_remove_list.include?(user.id) then
+						puts "#{user.name} (@#{user.screen_name}) does not follow me."
+						unfollow_ids.push(user.id)
+					end
+				end
+			}
+		end
 		return unfollow_ids
 	end
 
 	def bulk_unfollow(unfollow_ids)
-		num_attempts = 0
+		unfollow_ids = unfollow_ids - @do_not_remove_list
 		unfollow_ids.each_slice(100) do |section|
-			begin
-				num_attempts += 1
+			perform_rate_limited_action {
 				@client.unfollow(section)
 				puts "Bulk unfollowed."
-			rescue Twitter::Error::TooManyRequests => error
-				if num_attempts <= MAX_ATTEMPTS
-					puts "We hit the rate limit sleeping for #{error.rate_limit.reset_in} seconds."
-					sleep error.rate_limit.reset_in
-					puts "Resuming operations."
-					retry
-				else
-					raise
-				end
-			end
+			}
 		end
 	end
 
 	def bulk_follow(follow_ids)
-		num_attempts = 0
 		follow_ids.each do |id|
-			begin
+			perform_rate_limited_action {
 				@client.follow(id)
 				puts "Followed user."
-			rescue Twitter::Error::TooManyRequests => error
-				puts "We hit the rate limit sleeping for #{error.rate_limit.reset_in} seconds."
-				sleep error.rate_limit.reset_in
-				puts "Resuming operations."
-				retry
-			end
+			}
 		end
 		puts "Bulk followed."
 	end
 
-	def find_people_to_follow(max_list_size)
+	def bulk_add_to_list(list_owner,list_name,user_ids)
+		user_ids.each_slice(100) do |section|
+			perform_rate_limited_action {
+				@client.add_list_members(list_owner,list_name,section)
+			}
+		end
+	end
+
+	def search_users(search_term)
+		total_users = []
+		perform_rate_limited_action {
+			found_users = @client.user_search(search_term, { :count => 20, :page => 0 })
+		}
+		return found_users
+	end 
+
+	def find_users_tweeting(search_terms, max_list_size)
 		list_to_follow = []
-		topics = ["follow4follow", "followback", "followme", "followtrick"]
-		@stream.filter(:track => topics.join(",")) do |object|
-			if !@following_ids.include?(object.user.id) && !list_to_follow.include?(object.user.id)
+		@stream.filter(:track => search_terms.join(",")) do |object|
+			if !list_to_follow.include?(object.user.id)
 				list_to_follow.push(object.user.id)
 			end
 
@@ -111,63 +124,26 @@ class Leercat
 		end
 	end
 
-	def find_annoying_spammers()
-		spammer_list = []
-		@stream.user do |object|
-			case object
-			when Twitter::Tweet
-
-				if object.text.include?("#ＲＥＴＷＥＥＴ") || object.text.include?("#TFB_Cats") || object.text.include?("RT2GAIN") || object.text.include?("FOLLOWBACK") || object.text.include?("#FOLLOW") || object.text.include?("followback") || object.text.include?("#MGWV") || object.text.include?("#AnotherFollowTrain") || object.text.include?("FOLLOWTRICK") || object.text.include?("#TEAMFOLLOWBACK") || object.text.include?("#TEAMMZBNIKKI")
-					if !spammer_list.include?(object.user.id)
-						spammer_list.push(object.user.id)
-						puts "Spammer count: #{spammer_list.length}"
-					end
-				end
-			end
-
-			if 	spammer_list.length >= 10
-				return spammer_list
-			end
-		end
-	end
-
 	def is_spam_tweet(text)
-		if text.include?("#ＲＥＴＷＥＥＴ") || text.include?("#TFB_Cats") || text.include?("RT2GAIN") || text.include?("FOLLOWBACK") || text.include?("#FOLLOW") || text.include?("followback") || text.include?("#MGWV") || text.include?("#AnotherFollowTrain") || text.include?("FOLLOWTRICK") || text.include?("#TEAMFOLLOWBACK") || text.include?("#TEAMMZBNIKKI")
+		if @gain_tweet_words.any? { |word| text.include?(word) }
 			return true
 		end
 
 		return false
 	end
 
+	# this function is pretty bad for now.
 	def is_foreign_tweet(text)
-		if @whatlanguage.language(text) != "english"
+		language = @whatlanguage.language(text)
+		# puts "#{text} is thought to be #{language}"
+		if language != "english"
 			return true
 		end
 
 		return false
 	end
 
-	def find_foreign_tweeters()
-		foreign_list = []
-		@stream.user do |object|
-			case object
-			when Twitter::Tweet
-
-				if @whatlanguage.language(object.text) != "english"
-					if !foreign_list.include?(object.user.id)
-						foreign_list.push(object.user.id)
-						puts "Foreign count: #{foreign_list.length}"
-					end
-				end
-			end
-
-			if 	foreign_list.length >= 10
-				return foreign_list
-			end
-		end
-	end	
-
-	def find_people_to_unfollow(count=100, max_read=1000)
+	def find_people_to_unfollow(count=100, max_read=250)
 		unfollow_list = []
 		read = 0
 		@stream.user do |object|
@@ -175,32 +151,56 @@ class Leercat
 			when Twitter::Tweet
 				read += 1
 				add_to_list = false
-
-				if is_foreign_tweet(object.text) || is_spam_tweet(object.text)
-					if !unfollow_list.include?(object.user.id)
-						unfollow_list.push(object.user.id)
-						puts "Unfollow list count: #{unfollow_list.length}"
-					end
+				if is_spam_tweet(object.text) && !@do_not_remove_list.include?(object.user.id) && !unfollow_list.include?(object.user.id)
+					unfollow_list.push(object.user.id)
+					puts "Putting #{object.user.id} on the spammer list."
+					puts "Unfollow list count: #{unfollow_list.length}"
 				end
 			end
-
+			puts "Total Read: #{read}"
 			if unfollow_list.length >= count || read >= max_read
 				return unfollow_list
 			end
-
-
 		end		
 	end
+
+	def get_trending_list()
+		puts @client.trends()
+	end
+
+	def begin()
+		@stream.user do |object|
+			case object
+			when Twitter::Tweet
+			end
+		end
+	end
+
+	def set_do_not_remove_list(list)
+		@do_not_remove_list = list
+	end
+
 end
 
 leer = Leercat.new($config)
+search_terms = leer.get_interesting_subjects.map { |word| "#{word} followback" } 
+
+search_terms.each do |term|
+	leer.bulk_add_to_list('sgorman07','Followback', leer.search_users(term))
+end
+#leer.bulk_add_to_list('sgorman07','FIFO-Gains', )
+#leer.set_do_not_remove_list(leer.get_list_members("sgorman07","CAPTCHA"))
+
 #leer.create_following_list()
 #unfollow_ids = leer.create_unfollower_list();
 #leer.bulk_unfollow(unfollow_ids)
-#leer.bulk_unfollow(leer.find_annoying_spammers())
-while true do
-	leer.bulk_unfollow(leer.find_people_to_unfollow())
-end
+
+
+
+
+#while true do
+#	leer.bulk_unfollow(leer.find_people_to_unfollow())
+#end
 =begin
 leer.create_following_list()
 followed_count = 0
@@ -216,4 +216,6 @@ while true do
 	followed_count += 15
 end
 =end
+
+#leer.bulk_unfollow(unfollow_ids)
 
